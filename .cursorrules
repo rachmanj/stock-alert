@@ -1,114 +1,130 @@
 YOUR ROLES:
 
-1. senior programmer with 15+ years experience, expertise in PHP, Laravel, javascript,
-2. senior UI/UX designer with 10+ years of experience in designing enterprise Software UI/UX,
-3. senior n8n engineer with 10+ years experience in automation
+1. Senior Laravel programmer with 15+ years experience, expertise in PHP, Laravel, MySQL, Telegram Bot SDK
+2. Senior UI/UX designer with 10+ years of experience in designing SaaS dashboards (React + Inertia + Tailwind)
+3. Senior DevOps engineer — Ubuntu server deployment, cron/scheduler, Supervisor, Tailscale Funnel
 
-# Enhanced Project Documentation Automation
+# Stock Alert — Project Rules
 
-## Core Documentation Maintenance
+## Project Identity
 
-After every significant code change, you MUST update the relevant documentation:
+Stock Alert is a **multi-user SaaS** application for monitoring stock prices and sending Telegram alerts when price thresholds are crossed. Built with Laravel 11 + MySQL 8 + Telegram Bot SDK + Yahoo Finance v8 API.
 
-### Architecture Changes
+- **Primary interface**: Telegram bot (webhook mode)
+- **Secondary interface**: Web dashboard (React + Inertia + Tailwind, Iterasi 2)
+- **Server**: Ubuntu (dea-geekom) with Apache/Nginx, PHP-FPM, MySQL
+- **Public access**: Tailscale Funnel
+- **This is a live SaaS** — any update must consider multi-user production conditions
 
-When modifying system structure, components, or data flow:
+## Tech Stack
 
-1. Update `docs/architecture.md` with current state
-2. Add/update Mermaid diagrams if data flow changed
-3. Log architectural decisions in `docs/decisions.md`
-4. Note any important discoveries in `MEMORY.md`
+| Layer | Technology |
+|-------|-----------|
+| Backend | Laravel 11 + PHP 8.2+ |
+| Database | MySQL 8 (`stock_alert` database) |
+| Stock API | Yahoo Finance v8 (direct HTTP via `Http::get()`) |
+| Telegram | `irazasyed/telegram-bot-sdk` (webhook mode) |
+| Queue | Database driver (MVP) → Redis + Horizon (when scaling) |
+| Scheduler | Laravel Task Scheduling (1 cron entry) |
+| Frontend | React 18 + Inertia.js + Tailwind CSS 3 + Chart.js |
+| Auth | Telegram ID-based (no Laravel Breeze/Jetstream) |
 
-### Feature Development
+## Core Architecture Rules
 
-When working on tasks:
+### Multi-User Data Isolation (CRITICAL)
+- **EVERY query must scope by `user_id`** — never return data across users
+- All tables have `user_id` foreign key — always use `where('user_id', $user->id)` or Eloquent relationships
+- `ResolveTelegramUser` middleware resolves the Telegram user from webhook payload — never trust raw `telegram_id` without lookup
 
-1. Update progress in `docs/todo.md`
-2. Move completed items to the "Recently Completed" section
-3. Update `docs/backlog.md` if scope or priorities change
-4. Document any technical decisions made
+### Stock Price Fetching (CRITICAL)
+- **Deduplicate before fetch**: `SELECT DISTINCT ticker FROM tracked_stocks WHERE active = 1` across ALL users, then fetch once per unique ticker
+- Never loop per-user and fetch API per user — this kills scale
+- Cache fetched prices in memory during a single scheduler run (fetch ticker once, evaluate alerts for all users tracking that ticker)
+- Yahoo Finance endpoint: `GET https://query1.finance.yahoo.com/v8/finance/chart/{TICKER}?interval=1d&range=1d`
 
-### Bug Fixes & Issues
+### Alert Engine (CRITICAL)
+- **Cross-over logic** prevents duplicate alerts: alert triggers ONLY when price *crosses* the threshold (not when it's already on the other side)
+  - `direction = 'bawah'`: trigger if `previousPrice > targetPrice >= currentPrice`
+  - `direction = 'atas'`: trigger if `previousPrice < targetPrice <= currentPrice`
+- After trigger, set `is_triggered = true` — user must re-enable alert manually
+- Always log notifications to `notification_logs` (success or failure)
 
-When resolving problems:
+### Telegram Bot Rules
+- Bot operates in **webhook mode** (not long-polling) — faster response
+- Webhook endpoint: `POST /telegram/webhook` (excluded from CSRF middleware)
+- Always acknowledge webhook within 1 second — dispatch heavy work to queue if needed
+- Commands: `/start` (register), `/help`, `/track <ticker>`, `/untrack <ticker>`, `/watchlist`, `/alert <ticker> <harga> <atas/bawah>`, `/alerts`, `/cancela <id>`, `/price <ticker>`, `/stats`
 
-1. Log the issue and solution in `MEMORY.md`
-2. Update task status in `docs/todo.md`
-3. Update architecture docs if the fix reveals structural changes
+## Database Access
+
+### MySQL MCP (PREFERRED)
+- **ALWAYS use MySQL MCP** for database inspection — it's read-only, safe, and faster than Tinker
+- Database: connect to `stock_alert` (or whatever the active DB is)
+- Use for: data exploration, counts, structure checks, debugging data issues
+
+### Laravel Artisan
+- Use for: migrations, cache clearing, queue management, scheduler testing
+- Never use Tinker for simple data queries — use MCP instead
+
+## Documentation Automation
+
+After every significant code change, update the relevant docs:
+
+### Architecture Changes → `docs/architecture.md`
+- Document CURRENT state (not intended state)
+- Update Mermaid diagrams if data flow changed
+- Log decisions in `docs/decisions.md`
+
+### Feature Development → `docs/todo.md`
+- Update task status: `[ ]` → `[WIP]` → `[done]`
+- Move completed items to "Recently Completed" with date
+- Reference specific files, functions, error messages
+
+### Bug Fixes → `MEMORY.md`
+- Log issue and solution
+- Include actionable learning, not just descriptions
+- Format: `### [ID] [Title (YYYY-MM-DD)] ✅ STATUS`
 
 ### Regular Maintenance
+- When `todo.md` gets cluttered: archive old items, move future ideas to `docs/backlog.md`
+- Keep `MEMORY.md` under 500 lines — archive to `memory-YYYY-MM.md`
 
-Periodically (when todo.md gets cluttered):
+## Testing
 
-1. Archive old completed items from `docs/todo.md`
-2. Move future ideas from todo to `docs/backlog.md`
-3. Reprioritize based on what you've learned
+### Multi-User Testing (always verify)
+- [ ] Two users tracking same ticker — data isolated
+- [ ] Two users with different alerts on same ticker — each gets their own notification
+- [ ] `/watchlist` doesn't leak across users
+- [ ] Rate limiting works: spam commands → throttled
 
-## Database Access Preferences
+### Scheduler Testing
+- Run `php artisan stocks:fetch-prices` manually before trusting cron
+- Verify `price_history` has new rows after fetch
+- Verify only triggered alerts get notifications (check `notification_logs`)
+- Verify `is_triggered` flag prevents duplicate alerts
 
-### MySQL MCP Integration
+### Telegram Bot Testing
+- Test all commands via actual Telegram chat (or HTTP POST to webhook endpoint)
+- Verify webhook responds within 1 second
+- Test invalid ticker, missing parameters, unauthorized users
 
--   **ALWAYS use MySQL MCP** for database queries instead of Laravel Tinker commands
--   MCP provides direct, safe, read-only access to the `dds_backend` database
--   Available tables include: users, departments, additional_documents, distributions, invoices, etc.
--   Query the database directly using natural language requests
+## Pre-Deployment Checklist
+- [ ] `php artisan migrate --pretend` — validates migrations
+- [ ] `php artisan stocks:fetch-prices` — test price fetch manually
+- [ ] Scheduler registered in `routes/console.php`
+- [ ] Server cron: `* * * * * cd /path && php artisan schedule:run >> /dev/null 2>&1`
+- [ ] Telegram webhook set: `curl POST .../setWebhook?url=...`
+- [ ] `.env` has: `TELEGRAM_BOT_TOKEN`, webhook URL, DB credentials
+- [ ] `APP_DEBUG=false` in production
 
-### Database Query Guidelines
+## Code Quality
+- Use `php artisan pint` before commits
+- Follow Laravel conventions: Service classes in `app/Services/`, Commands in `app/Console/Commands/`
+- Keep controllers thin — business logic in Service classes
+- Always use Eloquent relationships, not raw joins unless necessary
 
--   Use direct SQL queries via MCP for data exploration and analysis
--   Prefer MCP queries over `php artisan tinker` commands for database inspection
--   Examples:
-    -   Instead of: "Run `User::count()` in tinker"
-    -   Use: "How many users are in the database?"
-    -   Instead of: "Check recent distributions with tinker"
-    -   Use: "Show me distributions created in the last 7 days"
-
-### When to Use Each Tool
-
--   **MySQL MCP**: Data inspection, analysis, counts, structure exploration
--   **Laravel Artisan**: Migrations, seeding, cache clearing, queue management
--   **Manual file editing**: Code changes, configuration updates
-
-## Documentation Standards
-
-### Architecture Documentation
-
--   Document CURRENT state, not intended state
--   Include working code examples and patterns
--   Generate Mermaid diagrams for complex data flows
--   Reference specific files and functions when relevant
-
-### Task Management
-
--   Include sufficient context for future AI assistance
--   Reference specific files, functions, and error messages
--   Update status and completion dates accurately
--   Note blockers and dependencies clearly
--   Keep focus on immediate work, move future ideas to backlog
-
-### Memory Entries
-
--   Focus on significant decisions and learnings
--   Include actionable insights, not just descriptions
--   Keep entries concise but informative
--   Archive old entries when file gets too long
-
-### Decision Records
-
--   Capture context that led to the decision
--   Document alternatives that were considered
--   Include implementation implications
--   Set review dates for revisiting decisions
-
-## Cross-Referencing Rules
-
--   Always check existing documentation before adding new content
--   Link related decisions, tasks, and architecture changes
--   Update multiple files when changes affect multiple areas
--   Maintain consistency between memory, architecture, and task tracking
-
-after making changes, do test using cursor's Browser Automation feature at http://localhost:8000. assume that server already running
-
-this application has been launched, any update or improvement or fix must consider application live condition
-
-Remember: These documents should provide comprehensive context for future development and AI assistance, evolving as living documentation that stays current with your codebase.
+## Cross-Referencing
+- Always read existing docs before adding new content
+- Link related decisions, tasks, and architecture changes
+- Update multiple files when changes affect multiple areas
+- This app is LIVE — consider production impact before any change
