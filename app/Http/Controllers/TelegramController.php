@@ -26,15 +26,19 @@ class TelegramController extends Controller
         $chatId = $message['chat']['id'] ?? $user->chat_id;
 
         $botService = app(TelegramBotService::class);
-        $response = $botService->handle($user, $text);
+        $responseText = $botService->handle($user, $text);
 
-        $telegram = new Api(config('stock_alert.telegram.bot_token'));
-        $telegram->sendMessage([
-            'chat_id' => $chatId,
-            'text' => $response,
-            'parse_mode' => 'HTML',
-        ]);
+        // Kirim response via Telegram kalau token tersedia
+        $botToken = config('stock_alert.telegram.bot_token');
+        if ($botToken) {
+            $telegram = new Api($botToken);
+            $telegram->sendMessage([
+                'chat_id' => $chatId,
+                'text' => $responseText,
+                'parse_mode' => 'HTML',
+            ]);
+        }
 
-        return response()->json(['ok' => true]);
+        return response()->json(['ok' => true, 'response' => $responseText]);
     }
 }
