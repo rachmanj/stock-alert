@@ -6,6 +6,7 @@ use App\Models\PriceAlert;
 use App\Models\PriceHistory;
 use App\Models\TrackedStock;
 use App\Models\User;
+use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
 
 class TelegramBotService
@@ -16,29 +17,39 @@ class TelegramBotService
 
     public function handle(User $user, string $text): string
     {
-        $text = trim($text);
+        try {
+            $text = trim($text);
 
-        if (! str_starts_with($text, '/')) {
-            return $this->unknownCommand();
+            if (! str_starts_with($text, '/')) {
+                return $this->unknownCommand();
+            }
+
+            $parts = explode(' ', $text);
+            $command = strtolower(explode('@', $parts[0])[0]);
+            $args = array_slice($parts, 1);
+
+            return match ($command) {
+                '/start' => $this->handleStart($user),
+                '/help' => $this->handleHelp(),
+                '/track' => $this->handleTrack($user, $args),
+                '/untrack' => $this->handleUntrack($user, $args),
+                '/watchlist' => $this->handleWatchlist($user),
+                '/alert' => $this->handleAlert($user, $args),
+                '/alerts' => $this->handleAlerts($user),
+                '/cancela', '/cancelalert' => $this->handleCancelAlert($user, $args),
+                '/price' => $this->handlePrice($user, $args),
+                '/stats' => $this->handleStats($user),
+                default => $this->unknownCommand(),
+            };
+        } catch (\Exception $e) {
+            Log::error('TelegramBotService error: '.$e->getMessage(), [
+                'user_id' => $user->id,
+                'text' => $text,
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return '❌ Maaf, terjadi kesalahan. Tim kami sudah diberitahu. Coba /help untuk bantuan.';
         }
-
-        $parts = explode(' ', $text);
-        $command = strtolower(explode('@', $parts[0])[0]);
-        $args = array_slice($parts, 1);
-
-        return match ($command) {
-            '/start' => $this->handleStart($user),
-            '/help' => $this->handleHelp(),
-            '/track' => $this->handleTrack($user, $args),
-            '/untrack' => $this->handleUntrack($user, $args),
-            '/watchlist' => $this->handleWatchlist($user),
-            '/alert' => $this->handleAlert($user, $args),
-            '/alerts' => $this->handleAlerts($user),
-            '/cancela', '/cancelalert' => $this->handleCancelAlert($user, $args),
-            '/price' => $this->handlePrice($user, $args),
-            '/stats' => $this->handleStats($user),
-            default => $this->unknownCommand(),
-        };
     }
 
     public function sendToUser(User $user, string $text): void
@@ -92,7 +103,7 @@ class TelegramBotService
         $ticker = $this->normalizeTicker($args[0]);
 
         if (! $this->isValidTicker($ticker)) {
-            return '❌ Format ticker tidak valid. Contoh: BBCA.JK, AAPL';
+            return '❌ Format ticker tidak valid. Contoh: BBCA.JK, TLKM.JK, AAPL';
         }
 
         $existing = $user->trackedStocks()->where('ticker', $ticker)->first();
@@ -101,9 +112,9 @@ class TelegramBotService
             return 'Kamu sudah track ticker ini.';
         }
 
-        $activeCount = $user->trackedStocks()->where('active', true)->count();
-        if (! $existing && $activeCount >= config('stock_alert.limits.max_tickers_per_user')) {
-            return '❌ Batas maksimal watchlist tercapai. Hapus ticker dulu dengan /untrack.';
+        $trackedCount = $user->trackedStocks()->where('active', true)->count();
+        if (! $existing && $trackedCount >= config('stock_alert.limits.max_tickers_per_user')) {
+            return '⚠️ Kamu sudah mencapai batas maksimum '.config('stock_alert.limits.max_tickers_per_user').' ticker. Hapus beberapa dengan /untrack <ticker> dulu.';
         }
 
         $priceData = $this->stockPriceService->fetchPrice($ticker);
@@ -194,6 +205,10 @@ class TelegramBotService
         $targetPrice = $args[1];
         $direction = strtolower($args[2]);
 
+        if (! $this->isValidTicker($ticker)) {
+            return '❌ Format ticker tidak valid. Contoh: BBCA.JK, TLKM.JK, AAPL';
+        }
+
         if (! is_numeric($targetPrice) || (float) $targetPrice <= 0) {
             return '❌ Harga target harus angka positif.';
         }
@@ -205,12 +220,12 @@ class TelegramBotService
         $stock = $user->trackedStocks()->where('ticker', $ticker)->where('active', true)->first();
 
         if (! $stock) {
-            return "❌ Kamu belum track <b>{$ticker}</b>. Tambahkan dulu dengan /track {$ticker}";
+            return "❌ Kamu belum track ticker ini. /track {$ticker} dulu.";
         }
 
-        $activeAlerts = $user->priceAlerts()->where('is_triggered', false)->count();
-        if ($activeAlerts >= config('stock_alert.limits.max_alerts_per_user')) {
-            return '❌ Batas maksimal alert tercapai. Cancel alert lama dengan /cancela.';
+        $alertCount = $user->priceAlerts()->where('is_triggered', false)->count();
+        if ($alertCount >= config('stock_alert.limits.max_alerts_per_user')) {
+            return '⚠️ Kamu sudah mencapai batas maksimum '.config('stock_alert.limits.max_alerts_per_user').' alert aktif. Cancel beberapa dengan /cancela <id> dulu.';
         }
 
         PriceAlert::create([
@@ -286,7 +301,7 @@ class TelegramBotService
         $ticker = $this->normalizeTicker($args[0]);
 
         if (! $this->isValidTicker($ticker)) {
-            return '❌ Format ticker tidak valid. Contoh: BBCA.JK, AAPL';
+            return '❌ Format ticker tidak valid. Contoh: BBCA.JK, TLKM.JK, AAPL';
         }
 
         $priceData = $this->stockPriceService->fetchPrice($ticker);
